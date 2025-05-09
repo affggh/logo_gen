@@ -5,8 +5,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"log"
 	"os"
 	"path"
@@ -14,7 +16,8 @@ import (
 )
 
 const HEADER_SIZE int = 512
-const SUPPORT_RLE24_COMPRESSIONT bool = true
+
+var SUPPORT_RLE24_COMPRESSIONT bool = true
 
 type SplashHdr struct {
 	Magic  [8]byte
@@ -139,7 +142,7 @@ func EncodeLine(line []uint32) []Entry {
 				}
 				if index == total-1 {
 					run = append(run, line[index+1])
-					lst = append(lst, Entry{count, run})
+					lst = append(lst, Entry{count + 1, run})
 				}
 			}
 		} else {
@@ -231,7 +234,7 @@ func GetImageHeader(size image.Point, compressed bool, real_bytes int) []byte {
 			}
 			return 0
 		}(),
-		Blocks: uint32(real_bytes),
+		Blocks: uint32((real_bytes + 511) / 512),
 	}
 	buffer := make([]byte, binary.Size(header))
 	binary.Encode(buffer, binary.LittleEndian, &header)
@@ -240,6 +243,9 @@ func GetImageHeader(size image.Point, compressed bool, real_bytes int) []byte {
 
 func MakeLogoImage(logo, out string) {
 	img, err := GetImage(logo)
+	println("Parsing image:", logo, "->", out)
+	println("Width:", img.Bounds().Size().X, "Height", img.Bounds().Size().Y)
+	println("SUPPORT_RLE24_COMPRESIONT:", SUPPORT_RLE24_COMPRESSIONT)
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -252,8 +258,128 @@ func MakeLogoImage(logo, out string) {
 	body := GetImageBody(img, SUPPORT_RLE24_COMPRESSIONT)
 	fd.Write(GetImageHeader(img.Bounds().Size(), SUPPORT_RLE24_COMPRESSIONT, len(body)))
 	fd.Write(body)
+
+	println("Done!")
+	//fd.Truncate(int64(HEADER_SIZE + ((len(body)+511)/512)*512))
+}
+
+func BGR2Img(data []byte, width, height int) image.Image {
+	if len(data) < width*height*3 {
+		log.Fatalln("Size not equle: except:", width*height*3, "buf:", len(data))
+	}
+	cur := 0
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for h := 0; h < height; h++ {
+		for w := 0; w < width; w++ {
+			img.Set(w, h, color.RGBA{
+				data[cur+2],
+				data[cur+1],
+				data[cur],
+				0xFF,
+			})
+			cur += 3
+		}
+	}
+	return img
+}
+
+func ExtractLogoImage(splash, out string) {
+	save_img := func(img image.Image, outfile string) {
+		od, err := os.Create(outfile)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		err = png.Encode(od, img)
+		if err != nil {
+			log.Fatalln(err)
+		}
+	}
+
+	fd, err := os.Open(splash)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer fd.Close()
+
+	hdr := SplashHdr{}
+	err = binary.Read(fd, binary.LittleEndian, &hdr)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	println("Parsing:", splash, "->", out)
+	println("Width:", hdr.Width, "Height", hdr.Height)
+	println("Encoded:", hdr.Type == 1)
+
+	data, err := io.ReadAll(fd)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	offset := 0
+	data_len := len(data)
+	buffer := new(bytes.Buffer)
+	if hdr.Type == 1 { // RLE24 data
+		for offset < data_len {
+			count := int(data[offset]) + 1
+			offset++
+			if count > 128 {
+				repeatCount := count - 128
+				if offset+3 > data_len {
+					log.Fatalf("unexpected end of data during RLE repeat")
+				}
+				buffer.Write(bytes.Repeat(data[offset:offset+3], repeatCount))
+				offset += 3
+			} else {
+				byteCount := count * 3
+				if offset+byteCount > data_len {
+					log.Fatalf("unexpected end of data during RLE raw block")
+				}
+				buffer.Write(data[offset : offset+byteCount])
+				offset += byteCount
+			}
+		}
+	} else { // Raw data
+		buffer.Write(data)
+	}
+
+	img := BGR2Img(buffer.Bytes(), int(hdr.Width), int(hdr.Height))
+
+	save_img(img, out)
+	println("Done!")
 }
 
 func main() {
-	MakeLogoImage("logo.png", "splash.img")
+	if len(os.Args) < 2 {
+		println("Usage:")
+		println(os.Args[0], "encode", "logo.png", "splash.img")
+		println(os.Args[0], "decode", "splash.img", "logo.png")
+
+		println("You can set environment:RLE24=0 to make image raw")
+	}
+
+	if os.Getenv("RLE24") == "0" {
+		SUPPORT_RLE24_COMPRESSIONT = false
+	}
+
+	if len(os.Args) > 1 {
+		command := os.Args[1]
+
+		switch command {
+		case "encode":
+			if len(os.Args) == 4 {
+				MakeLogoImage(os.Args[2], os.Args[3])
+			} else {
+				println("Invalid use!")
+				os.Exit(1)
+			}
+		case "decode":
+			if len(os.Args) == 4 {
+				ExtractLogoImage(os.Args[2], os.Args[3])
+			} else {
+				println("Invalid use!")
+				os.Exit(1)
+			}
+		}
+	}
 }
