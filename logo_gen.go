@@ -244,7 +244,7 @@ func GetImageHeader(size image.Point, compressed bool, real_bytes int) []byte {
 func MakeLogoImage(logo, out string) {
 	img, err := GetImage(logo)
 	println("Parsing image:", logo, "->", out)
-	println("Width:", img.Bounds().Size().X, "Height", img.Bounds().Size().Y)
+	println("Width:", img.Bounds().Size().X, "Height:", img.Bounds().Size().Y)
 	println("SUPPORT_RLE24_COMPRESIONT:", SUPPORT_RLE24_COMPRESSIONT)
 	if err != nil {
 		log.Fatalln(err)
@@ -265,7 +265,7 @@ func MakeLogoImage(logo, out string) {
 
 func BGR2Img(data []byte, width, height int) image.Image {
 	if len(data) < width*height*3 {
-		log.Fatalln("Size not equle: except:", width*height*3, "buf:", len(data))
+		log.Fatalln("Size not enough: except:", width*height*3, "buf:", len(data))
 	}
 	cur := 0
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
@@ -308,7 +308,7 @@ func ExtractLogoImage(splash, out string) {
 	}
 
 	println("Parsing:", splash, "->", out)
-	println("Width:", hdr.Width, "Height", hdr.Height)
+	println("Width:", hdr.Width, "Height:", hdr.Height)
 	println("Encoded:", hdr.Type == 1)
 
 	data, err := io.ReadAll(fd)
