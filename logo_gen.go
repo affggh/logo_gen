@@ -213,7 +213,7 @@ func GetImageBody(img image.Image, compressed int) []byte {
 	}
 }
 
-func MakeLogoImage(logo string, out string) error {
+func MakeLogoImage(logo string, out string, imgType int) error {
 	fd, err := os.Open(logo)
 	if err != nil {
 		return fmt.Errorf("failed to open logo file: %w", err)
@@ -225,9 +225,9 @@ func MakeLogoImage(logo string, out string) error {
 		return fmt.Errorf("failed to decode logo file: %w", err)
 	}
 
-	// Always pack as RLE24 (type 1), matching the reference implementation.
-	body := GetImageBody(img, typeRLE24)
-	header := GetImgHeader(img.Bounds().Size(), typeRLE24, uint32(len(body)))
+	// imgType: 0 = raw BGR24, 1 = RLE24 compressed.
+	body := GetImageBody(img, imgType)
+	header := GetImgHeader(img.Bounds().Size(), imgType, uint32(len(body)))
 
 	fdout, err := os.Create(out)
 	if err != nil {
@@ -404,23 +404,28 @@ func progName() string {
 
 func showUsage() {
 	fmt.Printf(`usage:
-  %[1]s pack   [logo.png]   [-o splash.img]    encode an image into a splash image
-  %[1]s unpack [splash.img] [-o splash.png]    decode a splash image into a PNG
-  %[1]s help                                   show this help
+  %[1]s pack   [logo.png]   [-o splash.img] [-t raw|rle]   encode an image into a splash image
+  %[1]s unpack [splash.img] [-o splash.png]                 decode a splash image into a PNG
+  %[1]s help                                                show this help
+
+options:
+  -o, --out <file>   output file (default: splash.img / splash.png)
+  -t, --type <fmt>   pack payload format: raw or rle (default: rle)
 
 with no arguments, "%[1]s" behaves like "%[1]s pack logo.png"
 `, progName())
 }
 
-// parseOutFlag extracts the "-o/--out <file>" option (or -o=file/--out=file)
-// from args and returns the remaining positional arguments.
-func parseOutFlag(args []string) (out string, rest []string, err error) {
+// parseFlags extracts options (-o/--out, -t/--type, plus their =value forms)
+// from args and returns the output path, the pack format and remaining
+// positional arguments. An empty format means "use the default (rle)".
+func parseFlags(args []string) (out string, format string, rest []string, err error) {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "-o" || a == "--out":
 			if i+1 >= len(args) {
-				return "", nil, errors.New("option " + a + " requires a file path")
+				return "", "", nil, errors.New("option " + a + " requires a file path")
 			}
 			out = args[i+1]
 			i++
@@ -428,17 +433,39 @@ func parseOutFlag(args []string) (out string, rest []string, err error) {
 			out = a[3:]
 		case len(a) > 6 && a[:6] == "--out=":
 			out = a[6:]
+		case a == "-t" || a == "--type":
+			if i+1 >= len(args) {
+				return "", "", nil, errors.New("option " + a + " requires a value (raw or rle)")
+			}
+			format = args[i+1]
+			i++
+		case len(a) > 3 && a[:3] == "-t=":
+			format = a[3:]
+		case len(a) > 7 && a[:7] == "--type=":
+			format = a[7:]
 		case a[0] == '-':
-			return "", nil, fmt.Errorf("unknown option %q", a)
+			return "", "", nil, fmt.Errorf("unknown option %q", a)
 		default:
 			rest = append(rest, a)
 		}
 	}
-	return out, rest, nil
+	return out, format, rest, nil
+}
+
+// parseImgType converts a format name into the splash image type constant.
+func parseImgType(format string) (int, error) {
+	switch format {
+	case "raw", "0":
+		return typeRaw, nil
+	case "rle", "rle24", "1":
+		return typeRLE24, nil
+	default:
+		return 0, fmt.Errorf("invalid pack type %q (want raw or rle)", format)
+	}
 }
 
 func runPack(args []string) int {
-	out, rest, err := parseOutFlag(args)
+	out, format, rest, err := parseFlags(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		showUsage()
@@ -456,16 +483,29 @@ func runPack(args []string) int {
 	if out == "" {
 		out = defaultImgOut
 	}
-	if err := MakeLogoImage(in, out); err != nil {
+	// Default to RLE24, matching the reference implementation.
+	imgType := typeRLE24
+	if format != "" {
+		imgType, err = parseImgType(format)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 2
+		}
+	}
+	if err := MakeLogoImage(in, out, imgType); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	fmt.Printf("packed %s -> %s\n", in, out)
+	typeName := "raw"
+	if imgType == typeRLE24 {
+		typeName = "rle24"
+	}
+	fmt.Printf("packed %s -> %s (%s)\n", in, out, typeName)
 	return 0
 }
 
 func runUnpack(args []string) int {
-	out, rest, err := parseOutFlag(args)
+	out, _, rest, err := parseFlags(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		showUsage()
